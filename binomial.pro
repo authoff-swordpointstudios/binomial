@@ -1,5 +1,5 @@
 TEMPLATE = app
-CONFIG += console c++14
+CONFIG += console c++17
 CONFIG -= app_bundle
 CONFIG -= qt
 
@@ -7,10 +7,10 @@ SOURCES += \
         main.cpp
 
 QMAKE_CXXFLAGS += \
-            -std=c++17 \
-#            -std=gnu++17 \
+#            -std=c++17 \       # Not needed anymore use CONFIG
+#            -std=gnu++17 \     # Not needed anymore use CONFIG
 #            -std=c++2a \
-#            -std=gnu++2a \
+            -std=gnu++2a \      # Not sure if this is on correct place in gcc line because CONFIG also places one.
             -fconcepts \
             -fopenmp \
 #            -pedantic-errors \
@@ -30,10 +30,6 @@ HEADERS += \
     ../grostig_tools/cpp_headers.h \
     ../grostig_tools/boost_headers.h \
     ../grostig_tools/gnuplot-iostream.h \
-
-LIBS += \
-        -ltbb \
-
 
 # boost on fedora26 parial list only derived from Unbuntu list
 LIBS += \

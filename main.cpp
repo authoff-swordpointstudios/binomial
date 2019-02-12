@@ -15,6 +15,27 @@ using std::cout;
 using std::cin;
 using std::endl;
 
+constexpr size_t MAX_CHUCK_SIZE = 100;
+constexpr size_t MAX_TRIALS = 1000;
+
+class thread_guard
+{
+    std::thread& t;
+public:
+    explicit thread_guard(std::thread& t_):
+        t(t_)
+    {}
+    ~thread_guard()
+    {
+        if(t.joinable())
+        {
+            t.join();
+        }
+    }
+    thread_guard(thread_guard const&)=delete;
+    thread_guard& operator=(thread_guard const&)=delete;
+};
+
 //double binomial_coefficient_nCk(int const n, int const k) {  // THIS IS partly WRONG, use boost.
 //    if (n == 0 || n == k) return 1;
 //    return 1/ ((n+1) * std::tr1::beta( n-k+1, k+1 ));
@@ -71,19 +92,51 @@ void binomial_rel_freq_histogram_vector(size_t const trials, double const p_succ
 //    std::copy(histogram.begin(), histogram.end(), std::ostream_iterator<int>( cout, " \n" ) );
 }
 
+class sample_distribution
+{
+    typedef std::array< size_t, MAX_TRIALS > Hist;  // todo: actually want this to be MAX_CHUCKS, but gives type error.
+    Hist& histogram;
+    std::binomial_distribution<size_t> dist;
+    std::mt19937 gen;
+    size_t num_samplings;
+    size_t offset;
+public:
+    sample_distribution()=delete;  // todo: is this a good idea?
+    sample_distribution(Hist & histogram_, size_t const num_samplings_, size_t offset_, std::binomial_distribution<size_t> & dist_, std::mt19937 & gen_ ):
+        histogram(histogram_), num_samplings(num_samplings_), offset(offset_), dist(dist_), gen(gen_){}
+
+    void operator()()
+    {
+        for(unsigned j=0;j<num_samplings;++j)
+        {
+            ++histogram[static_cast<size_t>( dist(gen) ) + offset ];
+        }
+    }
+    size_t get_offset() {
+        return offset;
+    }
+};
+
 void binomial_rel_freq_histogram_array(size_t trials, double const p_success, size_t const num_samplings ) {
-    constexpr int MAX_TRIALS = 1000;
+
     assert( 1 <= trials && trials <= MAX_TRIALS );
-    assert( !(0.0 > p_success || p_success > 1.0) );
+    assert( !(0.0 > p_success || p_ssample_chuck_t(sample_chunk)uccess > 1.0) );
     std::random_device rd;
     std::mt19937 gen( rd() );
     std::binomial_distribution<size_t> dist( trials, p_success );
     std::array<size_t, MAX_TRIALS> histogram;
+    size_t chunk_size = num_samplings / 7;
+    std::vector<std::thread> threads;
     cout << "Probability Mass/Density Function Graph - Binomial Distribution with trials, likelyhood: " << trials << ", " << p_success << std::endl;
-
-    for (size_t n = 0; n < num_samplings; ++n) {
-        ++histogram[ static_cast<size_t>( dist(gen) )];
+    for (size_t chunk = 0; chunk < 6; ++chunk) {
+        size_t offset = chunk * chunk_size;  // todo: check this for off by one.
+        sample_distribution sample_chunk( histogram, offset, num_samplings/(chunk+1), dist, gen );
+        threads.push_back( std::thread( sample_distribution, histogram, offset, num_samplings/(chunk+1), dist, gen ) );
+        // thread_guard guarded_thread(sample_chuck_t);  // todo: yes it is guarded.  how do I get value back from thread?
     }
+//    for (size_t n = 0; n < num_samplings; ++n) {
+//        ++histogram[ static_cast<size_t>( dist(gen) )];
+//    }
     for (size_t i = 0; i < trials+1; ++i ) {
         cout << std::setw(4) << i << ' '
                   << std::setw(10) << histogram[i]/num_samplings << ' '

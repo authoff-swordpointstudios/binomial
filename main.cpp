@@ -6,8 +6,13 @@
 #include <iterator>
 #include <random>
 #include <thread>
+#include <algorithm>
+#include <functional>
 
 #include <boost/math/special_functions/binomial.hpp>
+//#include <boost/log/core.hpp>
+#include <boost/log/trivial.hpp>
+#include <boost/log/expressions.hpp>
 #include <tr1/cmath>  // to pick up beta()
 #include <eigen3/Eigen/Dense>
 
@@ -15,8 +20,14 @@ using std::cout;
 using std::cin;
 using std::endl;
 
-constexpr size_t MAX_CHUCK_SIZE = 100;
-constexpr size_t MAX_TRIALS = 1000;
+void boost_log_init() {  // BOOST_LOG_TRIVIAL(trace) << "A trace severity message";
+        boost::log::core::get()->set_filter( boost::log::trivial::severity >= boost::log::trivial::info);
+}
+
+constexpr int    NUM_CPU_CORES  = 8;
+constexpr int    MAX_THREADS    = NUM_CPU_CORES;
+constexpr size_t MAX_TRIALS     = 1000;
+constexpr size_t TRIALS_ARRAY_SZ = (MAX_TRIALS+1)*MAX_THREADS;
 
 class thread_guard
 {
@@ -68,7 +79,7 @@ void binomial_rel_freq_histogram_map(size_t const trials, double const p_success
     }
     for (auto p : histogram) {
         cout << std::setw(4) << p.first << ' '
-                  << std::setw(10) << p.second << ' '
+                  << std::setw(10) << p.second/static_cast<double>(num_samplings) << ' '
                   << '\n';
     }
 }
@@ -86,25 +97,21 @@ void binomial_rel_freq_histogram_vector(size_t const trials, double const p_succ
     size_t i = 0;
     for (auto p : histogram) {
         cout << std::setw(4) << i++ << ' '
-                  << std::setw(10) << p/num_samplings << ' '
+                  << std::setw(10) << p/static_cast<double>(num_samplings) << ' '
                   << '\n';
     }
 //    std::copy(histogram.begin(), histogram.end(), std::ostream_iterator<int>( cout, " \n" ) );
 }
 
-class sample_distribution
+/* Sample_distribution_fo
+class Sample_distribution_fo
 {
+private:
     typedef std::array< size_t, MAX_TRIALS > Hist;  // todo: actually want this to be MAX_CHUCKS, but gives type error.
     Hist& histogram;
     std::binomial_distribution<size_t> dist;
     std::mt19937 gen;
-    size_t num_samplings;
-    size_t offset;
-public:
-    sample_distribution()=delete;  // todo: is this a good idea?
-    sample_distribution(Hist & histogram_, size_t const num_samplings_, size_t offset_, std::binomial_distribution<size_t> & dist_, std::mt19937 & gen_ ):
-        histogram(histogram_), num_samplings(num_samplings_), offset(offset_), dist(dist_), gen(gen_){}
-
+public:                                             // todo: data layout for cache performance?  work for functions too?
     void operator()()
     {
         for(unsigned j=0;j<num_samplings;++j)
@@ -112,7 +119,53 @@ public:
             ++histogram[static_cast<size_t>( dist(gen) ) + offset ];
         }
     }
-    size_t get_offset() {
+private:
+    size_t num_samplings;
+    size_t offset;
+public:
+    Sample_distribution_fo()=delete;                // todo: is this a good idea?
+    Sample_distribution_fo(Hist & histogram_, size_t const num_samplings_, size_t offset_,
+                           std::binomial_distribution<size_t> & dist_, std::mt19937 & gen_ ):
+        histogram(histogram_), num_samplings(num_samplings_), offset(offset_),
+        dist(dist_), gen(gen_){}
+
+    size_t get_offset() {                           // another way to ID the thread. todo: will I every use this? No?
+        return offset;
+    }
+};
+*/
+
+class Sample_distribution_fo2
+{
+private:
+    typedef std::array< size_t, TRIALS_ARRAY_SZ > Hist;  // todo : gets quite large...
+    Hist& histogram;
+//    std::binomial_distribution<size_t> dist;      // todo: question, how could I init these via constructor if wise?
+//    std::mt19937 gen;
+public:                                             // todo: data layout for cache performance?  work for functions too?
+    void operator()()
+    {
+        std::random_device          rd;
+        std::mt19937                gen ( rd() );
+        std::binomial_distribution  dist { trials, p_success };
+        for(unsigned j=0;j<num_samplings;++j)
+        {
+            ++histogram[static_cast<size_t>( dist(gen) ) + offset ];
+        }
+    }
+private:
+    size_t num_samplings;
+    size_t offset;
+    size_t trials;
+    double p_success;
+public:
+    Sample_distribution_fo2()=delete;                // todo: is this a good idea?
+    Sample_distribution_fo2(Hist & histogram_, size_t offset_, size_t const num_samplings_, size_t const trials_, double const p_success_
+                           ):
+        histogram(histogram_), num_samplings(num_samplings_), offset(offset_), trials(trials_), p_success(p_success_)
+    {}
+
+    size_t get_offset() {                           // another way to ID the thread. todo: will I every use this? No?
         return offset;
     }
 };
@@ -120,26 +173,56 @@ public:
 void binomial_rel_freq_histogram_array(size_t trials, double const p_success, size_t const num_samplings ) {
 
     assert( 1 <= trials && trials <= MAX_TRIALS );
-    assert( !(0.0 > p_success || p_ssample_chuck_t(sample_chunk)uccess > 1.0) );
-    std::random_device rd;
-    std::mt19937 gen( rd() );
-    std::binomial_distribution<size_t> dist( trials, p_success );
-    std::array<size_t, MAX_TRIALS> histogram;
-    size_t chunk_size = num_samplings / 7;
-    std::vector<std::thread> threads;
+    assert( !(0.0 > p_success || p_success > 1.0) );
+    std::random_device                          rd;
+    std::mt19937                                gen( rd() );
+    std::binomial_distribution<size_t>          dist( trials, p_success );
+    std::array<size_t, TRIALS_ARRAY_SZ>         histogram;
+    size_t chunk_sample_quantity =              num_samplings / MAX_THREADS;  // todo: truncation error, off by one error
+    std::vector<std::thread>                    threads;
     cout << "Probability Mass/Density Function Graph - Binomial Distribution with trials, likelyhood: " << trials << ", " << p_success << std::endl;
-    for (size_t chunk = 0; chunk < 6; ++chunk) {
-        size_t offset = chunk * chunk_size;  // todo: check this for off by one.
-        sample_distribution sample_chunk( histogram, offset, num_samplings/(chunk+1), dist, gen );
-        threads.push_back( std::thread( sample_distribution, histogram, offset, num_samplings/(chunk+1), dist, gen ) );
-        // thread_guard guarded_thread(sample_chuck_t);  // todo: yes it is guarded.  how do I get value back from thread?
+
+    size_t num_trial_values =   trials+1;  // include the case for zero probability.
+    size_t chunk_offset         { 0 };
+    size_t chunk_stride         { num_trial_values };
+    for (size_t chunk = 0; chunk < MAX_THREADS; ++chunk)
+    {
+        Sample_distribution_fo2 sample_chunk_fo2( histogram, chunk_offset, chunk_sample_quantity, trials, p_success );  // todo: div needs proper truncation.
+                  //        std::thread t = std::thread( sample_chunk_fo2 );
+                  //        std::thread t = std::thread( sample_chunk_fo, histogram, offset, num_samplings/(chunk+1), dist, gen );
+                  //        threads.push_back( std::thread( sample_chunk_fo2, histogram, offset, num_samplings/(chunk+1), dist, gen ) );
+                  //        threads.push_back( t );
+        threads.push_back( std::thread( sample_chunk_fo2 ) );  // todo:  why can't I put t in here?  get a deleted function template error
+                  //        thread_guard guarded_thread(t);  // todo: yes it is guarded.  how do I get return value back from thread? you don't with threads.
+        chunk_offset = chunk_offset + chunk_stride;
     }
-//    for (size_t n = 0; n < num_samplings; ++n) {
-//        ++histogram[ static_cast<size_t>( dist(gen) )];
-//    }
-    for (size_t i = 0; i < trials+1; ++i ) {
+//    if (t.joinable())
+//        t.join();
+//    else
+//        assert (false);
+                  //                  for (auto this_t : threads) {  // todo: why not?
+    std::for_each(threads.begin(), threads.end(),
+                  std::mem_fn( &std::thread::join ));
+
+    for (size_t i = 0; i < /*trials+1*/ 110; ++i ) {
         cout << std::setw(4) << i << ' '
-                  << std::setw(10) << histogram[i]/num_samplings << ' '
+                  << std::setw(10) << histogram[i]/*/num_samplings*/ << ' '
+                  << '\n';
+    }
+
+    chunk_offset = chunk_stride;
+    for (size_t thread = 0; thread < MAX_THREADS; ++thread) {  // don't add the first one (ie. = 0) to itself!
+        size_t trial_offset {0};
+        for (size_t my_trial = 0; my_trial < num_trial_values; my_trial++) {
+            trial_offset = chunk_offset + my_trial;
+            histogram[my_trial] += histogram[trial_offset];
+        }
+        chunk_offset = chunk_offset + chunk_stride;
+    }
+
+    for (size_t i = 0; i < /*trials+1*/ 110; ++i ) {
+        cout << std::setw(4) << i << ' '
+                  << std::setw(10) << histogram[i]/static_cast<double>(num_samplings) << ' '
                   << '\n';
     }
 }
@@ -168,9 +251,9 @@ int main()
 {
     size_t trials = 10;
     constexpr size_t  num_samplings     = 1'000'000;
-    binomial_rel_freq_histogram_map( trials, 0.5, num_samplings );
-    binomial_rel_freq_histogram_vector( trials, 0.7, num_samplings );
-    binomial_rel_freq_histogram_array( trials, 1.0, num_samplings );
+//    binomial_rel_freq_histogram_map(    trials, 0.5, num_samplings );
+//    binomial_rel_freq_histogram_vector( trials, 0.7, num_samplings );
+    binomial_rel_freq_histogram_array(  trials, 1.0, num_samplings );
 
     poisson_distribution_values( 4.1, 100 );
     binomial_distribution_values( trials, 0.5, 100 );

@@ -10,14 +10,14 @@ QMAKE_CXXFLAGS += \
 #            -std=c++17 \       # Not needed anymore use CONFIG
 #            -std=gnu++17 \     # Not needed anymore use CONFIG
 #            -std=c++2a \
-            -std=gnu++2a \      # Not sure if this is on correct place in gcc line because CONFIG also places one.
-            -fconcepts \
-            -fopenmp \
+#            -std=gnu++2a \      # Not sure if this is on correct place in gcc line because CONFIG also places one.
+#            -fconcepts \
+#            -fopenmp \
 #            -pedantic-errors \
 #            -pedantic \
 #            -Weffc++ \
-            -Wall \
-            -Wno-unused-parameter
+#            -Wall \
+#            -Wno-unused-parameter
 
 QMAKE_CXXFLAGS += -DBOOST_LOG_DYN_LINK  # on compile line not link line.
 

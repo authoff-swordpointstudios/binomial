@@ -172,11 +172,6 @@ void binomial_rel_freq_histogram_array(size_t trials, double const p_success, si
     }                
     std::for_each(threads.begin(), threads.end(), // for (auto this_t : threads) {  // todo: why not?
                   std::mem_fn( &std::thread::join ));
-    for (size_t i = 0; i < /*trials+1*/ 110; ++i ) {
-        cout << std::setw(4) << i << ' '
-                  << std::setw(10) << histogram[i]/*/num_samplings*/ << ' '
-                  << '\n';
-    }
     chunk_offset = chunk_stride;
     for (size_t thread = 0; thread < MAX_THREADS; ++thread) {  // don't add the first chuck (ie. = 0) to itself!
         size_t trial_offset {0};
@@ -186,7 +181,7 @@ void binomial_rel_freq_histogram_array(size_t trials, double const p_success, si
         }
         chunk_offset = chunk_offset + chunk_stride;
     }
-    for (size_t i = 0; i < /*trials+1*/ 110; ++i ) {
+    for (size_t i = 0; i < num_trial_values; ++i ) {
         cout << std::setw(4) << i << ' '
                   << std::setw(10) << histogram[i]/static_cast<double>(num_samplings) << ' '
                   << '\n';

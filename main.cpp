@@ -14,6 +14,7 @@
 #include <future>
 #include <cassert>
 #include <stdexcept>
+#include <jthread.hpp>  // WARNING c++20 experimental, but std:: namespace anyway!
 #include <boost/math/special_functions/binomial.hpp>
 //#include <boost/log/core.hpp>
 #include <boost/log/trivial.hpp>
@@ -69,18 +70,33 @@ double binomial_coefficient_nCk(int const n, int const k) {  // THIS IS partly W
 } */
 
 }
-std::string      PGM_NAME               {"binomial"};
-constexpr int    NUM_CPU_CORES =        8;
-constexpr int    MAX_THREADS =          NUM_CPU_CORES;
-constexpr int    MAX_ASYNC_FUTURES =    NUM_CPU_CORES;
-constexpr size_t MAX_BINOMIAL_TRIALS =  1000;
-constexpr size_t TRIALS_ARRAY_SZ =      (MAX_BINOMIAL_TRIALS+1)*MAX_THREADS;
-using Histogram = std::array< size_t, MAX_BINOMIAL_TRIALS >;     // todo : gets quite large...
+std::string         PGM_NAME               {"binomial"};
+constexpr size_t    CPU_CORES_QTY =        8;
+constexpr size_t    THREADS_MIN =          2;
+constexpr size_t    THREADS_MAX =          CPU_CORES_QTY;
+constexpr size_t    MAX_ASYNC_FUTURES =    CPU_CORES_QTY;
+constexpr size_t    BINOMIAL_TRIALS_MAX =  1000;  // bernouli trials max number of them.
+constexpr size_t    TRIALS_ARRAY_SZ =      (BINOMIAL_TRIALS_MAX+1)*THREADS_MAX;
+using Histogram = std::array< size_t, BINOMIAL_TRIALS_MAX >;     // todo : gets quite large...
 using Histogram_Parallel = std::array< size_t, TRIALS_ARRAY_SZ >;     // todo : gets quite large...
 
 void boost_log_init() {  // BOOST_LOG_TRIVIAL(trace) << "A trace severity message";
         boost::log::core::get()->set_filter( boost::log::trivial::severity >= boost::log::trivial::info);
 }
+
+auto threads_on_hardware( size_t const num_samplings, size_t const samplings_qty_min,
+                          size_t const threads_max, size_t const threads_min  ) {
+    // todo: NOTE: probable off by one error.
+    size_t threads_hardware_qty = std::thread::hardware_concurrency();
+    size_t threads_calc_max = (samplings_qty_min-1 + num_samplings) / samplings_qty_min;
+    size_t threads_qty { std::min( { 0 != threads_hardware_qty ? threads_hardware_qty : threads_min
+                                        , threads_calc_max
+                                        , threads_max } ) };
+    size_t chunk_sample_qty = num_samplings / threads_qty;
+    size_t chunk_sample_qty_p1 = chunk_sample_qty + num_samplings % threads_qty;  // number with the extra samples
+    return std::tuple< size_t,size_t,size_t > {threads_qty, chunk_sample_qty, chunk_sample_qty_p1};
+}
+
 
 double binomial_distribution_probability_mass_function( size_t const n_trials, size_t const k_successes, double const probability_of_success) {
     double bc =           boost::math::binomial_coefficient<double>( 5, 2);
@@ -144,14 +160,16 @@ void binomial_rel_freq_histogram_vector(size_t const trials, double const p_succ
 
 class Sample_the_distribution_fo {
 private: 
-    Histogram_Parallel & histogram_pll;                     // this is located at begining of the class for cache performance
+    Histogram_Parallel & histogram_pll;                     // pll = parallel // this is located at begining of the class for cache performance
 public:                                                     // todo: data layout for cache performance works for functions too?
     void operator()() {
         try {
         std::random_device          rd;
         std::mt19937                gen ( rd() );
         std::binomial_distribution<unsigned long>  dist { trials, p_success };  // assumed not to be thread-safe
-        for (unsigned j=0; j < num_samplings; ++j) {
+        size_t                      current_samples { chunk_sample_qty };
+        if (!p1_done) {current_samples = chunk_sample_qty_p1; p1_done = true; };
+        for (unsigned j=0; j < current_samples; ++j) {
             ++histogram_pll[ static_cast<size_t>( dist(gen) ) + offset ];
         }
         } catch (std::exception & e) { cerr<<PGM_NAME+":binomial_rel_freq_histogram:error exception: "<<e.what()<<endl; throw;
@@ -163,7 +181,9 @@ public:                                                     // todo: data layout
         std::random_device          rd;
         std::mt19937                gen ( rd() );
         std::binomial_distribution<unsigned long>  dist { trials, p_success };  // assumed not to be thread-safe
-        for (unsigned j=0; j < num_samplings; ++j) {
+        size_t                      current_samples { chunk_sample_qty };
+        if (!p1_done) {current_samples = chunk_sample_qty_p1; p1_done = true; };
+        for (unsigned j=0; j < current_samples; ++j) {
             ++histogram_pll[ static_cast<size_t>( dist(gen) ) + offset ];
         }
         } catch (std::exception & e) { cerr<<PGM_NAME+":binomial_rel_freq_histogram:error exception: "<<e.what()<<endl; throw;
@@ -171,9 +191,11 @@ public:                                                     // todo: data layout
     }
 private:
     size_t offset {};
-    size_t num_samplings {};
+    size_t chunk_sample_qty_p1 {};  // number with the extra samples
+    size_t chunk_sample_qty {};
     size_t trials {};
     double p_success {};
+    bool   p1_done { false };  // one set of samples has to do the number with the extra samples
     //  @OFFICER_TUBA: if only the following line is uncommented: compile error on no matching function? inititializer list?
     //                 unless it is marked static!
     //    std::random_device                  rd;     // todo: NOT USED yet!
@@ -182,18 +204,19 @@ private:
 public:
     Sample_the_distribution_fo()=delete;
 
-    explicit Sample_the_distribution_fo(Histogram_Parallel & histogram_, size_t const num_samplings_,
-                               size_t const trials_, double const p_success_)
-        : histogram_pll(histogram_), num_samplings(num_samplings_), trials(trials_), p_success(p_success_) {}
+    explicit Sample_the_distribution_fo(Histogram_Parallel & histogram_,
+                                        size_t const chunk_sample_qty_p1_, size_t const chunk_sample_qty_, size_t const trials_, double const p_success_)
+        : histogram_pll(histogram_), chunk_sample_qty_p1(chunk_sample_qty_p1_), chunk_sample_qty(chunk_sample_qty_), trials(trials_), p_success(p_success_) {}
 
     explicit Sample_the_distribution_fo(Histogram_Parallel & histogram_, size_t const offset_,
-                               size_t const num_samplings_, size_t const trials_, double const p_success_)
+                               size_t const chunk_sample_qty_p1_, size_t const chunk_sample_qty_, size_t const trials_, double const p_success_)
         : histogram_pll(histogram_)         /*, num_samplings(num_samplings_), offset(offset_), trials(trials_), p_success(p_success_))*/
                                             // histogram(histogram_), num_samplings(num_samplings_), offset(offset_), trials(trials_), p_success(p_success_)
     {
                                             // histogram = histogram_;      // todo: NOTE: compiler wants this initialization to be done on the "member intializer list", probably because it is a "ref", why?
         offset = offset_;
-        num_samplings = num_samplings_;
+        chunk_sample_qty_p1 = chunk_sample_qty_p1_;
+        chunk_sample_qty = chunk_sample_qty_;
         trials = trials_;
         p_success = p_success_;
         //        std::mt19937                gen ( (this->rd)() );                           // todo: NOT USED yet!
@@ -248,8 +271,8 @@ Histogram sample_the_distribution_a( size_t const num_samplings, size_t const tr
 // }
 //}
 
-void binomial_rel_freq_histogram_array_thread(size_t trials, double const p_success, size_t const num_samplings ) {
-    assert( 1 <= trials && trials <= MAX_BINOMIAL_TRIALS );
+void binomial_rel_freq_histogram_array_thread(size_t trials, double const p_success, size_t const samplings_qty ) {
+    assert( 1 <= trials && trials <= BINOMIAL_TRIALS_MAX );
     assert( !(0.0 > p_success || p_success > 1.0) );  // between 0 and 1 ie. [0,1]
     try {  // sorry no indent for whole function.
 
@@ -258,25 +281,27 @@ void binomial_rel_freq_histogram_array_thread(size_t trials, double const p_succ
     //    std::mt19937                                gen( rd() );                  // todo: NOT USED yet!
     //    std::binomial_distribution<size_t>          dist( trials, p_success );    // todo: NOT USED yet!
     Histogram_Parallel              histogram;                  // this is at the top of the function for performance.
-    size_t const                    chunk_sample_quantity { num_samplings / MAX_THREADS };  // todo: truncation error, off by one error
+    // size_t const                    chunk_sample_quantity { num_samplings / MAX_THREADS };  // todo: truncation error, off by one error
     size_t const                    num_trial_values      { trials+1 };  // include the case for zero successes within the set of trials.
     size_t const                    chunk_stride          { num_trial_values };
+    size_t const                    samplings_qty_min     { 10'000 };
     size_t                          chunk_offset          { 0 };
-    std::vector<std::thread>        threads;
+    auto [threads_qty, chunk_sample_quantity, chunk_sample_qty_p1] = threads_on_hardware( samplings_qty, samplings_qty_min, THREADS_MIN, THREADS_MAX);
+    std::vector<std::jthread>        threads;
 
-    Sample_the_distribution_fo sample_chunk_fo2 {histogram, chunk_sample_quantity, trials, p_success};  // histogram is a reference, so we need to join within this containing function.
-    for (size_t chunk = 0; chunk < MAX_THREADS; ++chunk)        //  *** Parallel Section ***
+    Sample_the_distribution_fo sample_chunk_fo2 {histogram, chunk_sample_quantity, chunk_sample_qty_p1, trials, p_success};  // histogram is a reference, so we need to join within this containing function.
+    for (size_t chunk = 0; chunk < THREADS_MAX; ++chunk)        //  *** Parallel Section ***
     {
         try {
-            std::thread t = std::thread( sample_chunk_fo2, chunk_offset );
+            std::jthread t = std::jthread( sample_chunk_fo2, chunk_offset );
             threads.push_back( std::move(t) );
-        } catch (...) {cerr << PGM_NAME+":fatal error: thread creation failed\n"<<endl; throw; }; // don't need thread guard due to vector. todo: even with thowing vector will be destructed and so also threads?
+        } catch (...) { cerr << PGM_NAME+":fatal error: thread creation failed\n"<<endl; throw; }; // don't need thread guard due to vector. todo: even with thowing vector will be destructed and so also threads?
         chunk_offset = chunk_offset + chunk_stride;
     }                
     std::for_each(threads.begin(), threads.end(),               // *** BARRIER *** //for (auto this_t : threads) {  // todo: why not?
-                  std::mem_fn( &std::thread::join ));
+                  std::mem_fn( &std::jthread::join ));
     chunk_offset = chunk_stride;
-    for (size_t thread = 0; thread < MAX_THREADS; ++thread) {   // *** Combine Results *** // don't add the first chuck (ie. = 0) to itself!
+    for (size_t thread = 0; thread < threads_qty; ++thread) {   // *** Combine Results *** // don't add the first chuck (ie. = 0) to itself!
         size_t trial_offset {0};
         for (size_t my_trial = 0; my_trial < num_trial_values; my_trial++) {
             trial_offset = chunk_offset + my_trial;
@@ -285,7 +310,7 @@ void binomial_rel_freq_histogram_array_thread(size_t trials, double const p_succ
         chunk_offset = chunk_offset + chunk_stride;
     }
     for (size_t i = 0; i < num_trial_values; ++i ) {
-        cout << std::setw(4) << i << ' ' << std::setw(10) << histogram[i]/grostig::narrow_cast_runtime<double>(num_samplings) << ' '<< '\n';
+        cout << std::setw(4) << i << ' ' << std::setw(10) << histogram[i]/grostig::narrow_cast_runtime<double>(samplings_qty) << ' '<< '\n';
     }
     } catch (std::exception & e) { cerr<<PGM_NAME+":binomial_rel_freq_histogram:error exception: "<<e.what()<<endl; throw;
     } catch (...) { cerr<<PGM_NAME+":binomial_rel_freq_histogram:error unknown exception: "<<endl; throw; };

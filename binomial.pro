@@ -30,6 +30,8 @@ HEADERS += \
     ../grostig_tools/cpp_headers.h \
     ../grostig_tools/boost_headers.h \
     ../grostig_tools/gnuplot-iostream.h \
+    jthread.hpp \
+    stop_token.hpp
 
 # boost on fedora26 parial list only derived from Unbuntu list
 LIBS += \

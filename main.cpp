@@ -84,19 +84,23 @@ void boost_log_init() {  // BOOST_LOG_TRIVIAL(trace) << "A trace severity messag
         boost::log::core::get()->set_filter( boost::log::trivial::severity >= boost::log::trivial::info);
 }
 
-auto threads_on_hardware( size_t const num_samplings, size_t const samplings_qty_min,
-                          size_t const threads_max, size_t const threads_min  ) {
-    // todo: NOTE: probable off by one error.
+auto threads_on_hardware( size_t const operations_qty_total, size_t const operations_qty_min,
+                          size_t const threads_min, size_t const threads_max ) {
+    assert( threads_min <= threads_max);
+    if (operations_qty_min >= operations_qty_total) {
+        return std::tuple< size_t,size_t,size_t > {threads_min, operations_qty_total, operations_qty_total };
+    }
     size_t threads_hardware_qty = std::thread::hardware_concurrency();
-    size_t threads_calc_max = (samplings_qty_min-1 + num_samplings) / samplings_qty_min;
-    size_t threads_qty { std::min( { 0 != threads_hardware_qty ? threads_hardware_qty : threads_min
+    size_t threads_calc_max = (operations_qty_total + operations_qty_min-1 ) / operations_qty_min;  // truncation is desired
+    size_t threads_qty { std::min( { 0 != threads_hardware_qty
+                                        ? threads_hardware_qty
+                                        : threads_min
                                         , threads_calc_max
                                         , threads_max } ) };
-    size_t chunk_sample_qty = num_samplings / threads_qty;
-    size_t chunk_sample_qty_p1 = chunk_sample_qty + num_samplings % threads_qty;  // number with the extra samples
-    return std::tuple< size_t,size_t,size_t > {threads_qty, chunk_sample_qty, chunk_sample_qty_p1};
+    size_t chunk_operations_qty = operations_qty_total / threads_qty;  // truncation is desired.
+    size_t chunk_operations_qty_mod = operations_qty_total % threads_qty;  // number with the extra samples.
+    return std::tuple< size_t,size_t,size_t > {threads_qty, chunk_operations_qty, chunk_operations_qty_mod};
 }
-
 
 double binomial_distribution_probability_mass_function( size_t const n_trials, size_t const k_successes, double const probability_of_success) {
     double bc =           boost::math::binomial_coefficient<double>( 5, 2);
@@ -162,26 +166,14 @@ class Sample_the_distribution_fo {
 private: 
     Histogram_Parallel & histogram_pll;                     // pll = parallel // this is located at begining of the class for cache performance
 public:                                                     // todo: data layout for cache performance works for functions too?
-    void operator()() {
-        try {
-        std::random_device          rd;
-        std::mt19937                gen ( rd() );
-        std::binomial_distribution<unsigned long>  dist { trials, p_success };  // assumed not to be thread-safe
-        size_t                      current_samples { chunk_sample_qty };
-        if (!p1_done) {current_samples = chunk_sample_qty_p1; p1_done = true; };
-        for (unsigned j=0; j < current_samples; ++j) {
-            ++histogram_pll[ static_cast<size_t>( dist(gen) ) + offset ];
-        }
-        } catch (std::exception & e) { cerr<<PGM_NAME+":binomial_rel_freq_histogram:error exception: "<<e.what()<<endl; throw;
-        } catch (...) { cerr<<PGM_NAME+":binomial_rel_freq_histogram:error unknown exception: "<<endl; throw; };
-    }
-    void operator()(size_t const offset_) {
+    void operator()()=delete;
+    void operator()(size_t const offset_, bool const is_do_one_more = false) {
         try {
         offset =                    offset_;
         std::random_device          rd;
         std::mt19937                gen ( rd() );
         std::binomial_distribution<unsigned long>  dist { trials, p_success };  // assumed not to be thread-safe
-        size_t                      current_samples { chunk_sample_qty };
+        size_t                      current_samples { is_do_one_more ? chunk_sample_qty+1 : chunk_sample_qty };  // this loop takes care of one of the additional (mod remainder) operations that are required.
         if (!p1_done) {current_samples = chunk_sample_qty_p1; p1_done = true; };
         for (unsigned j=0; j < current_samples; ++j) {
             ++histogram_pll[ static_cast<size_t>( dist(gen) ) + offset ];
@@ -203,18 +195,12 @@ private:
     //    std::mt19937                        gen;    // todo: NOT USED yet!
 public:
     Sample_the_distribution_fo()=delete;
-
+                        //        : histogram_pll(histogram_), chunk_sample_qty_p1(chunk_sample_qty_p1_), chunk_sample_qty(chunk_sample_qty_), trials(trials_), p_success(p_success_) {}
     explicit Sample_the_distribution_fo(Histogram_Parallel & histogram_,
-                                        size_t const chunk_sample_qty_p1_, size_t const chunk_sample_qty_, size_t const trials_, double const p_success_)
-        : histogram_pll(histogram_), chunk_sample_qty_p1(chunk_sample_qty_p1_), chunk_sample_qty(chunk_sample_qty_), trials(trials_), p_success(p_success_) {}
-
-    explicit Sample_the_distribution_fo(Histogram_Parallel & histogram_, size_t const offset_,
                                size_t const chunk_sample_qty_p1_, size_t const chunk_sample_qty_, size_t const trials_, double const p_success_)
-        : histogram_pll(histogram_)         /*, num_samplings(num_samplings_), offset(offset_), trials(trials_), p_success(p_success_))*/
-                                            // histogram(histogram_), num_samplings(num_samplings_), offset(offset_), trials(trials_), p_success(p_success_)
+        : histogram_pll(histogram_)
     {
                                             // histogram = histogram_;      // todo: NOTE: compiler wants this initialization to be done on the "member intializer list", probably because it is a "ref", why?
-        offset = offset_;
         chunk_sample_qty_p1 = chunk_sample_qty_p1_;
         chunk_sample_qty = chunk_sample_qty_;
         trials = trials_;
@@ -239,37 +225,37 @@ Histogram sample_the_distribution_a( size_t const num_samplings, size_t const tr
     } catch (...) { cerr<<PGM_NAME+":binomial_rel_freq_histogram:error unknown exception: "<<endl; throw; };
 };
 
-//void binomial_rel_freq_histogram_array_async(size_t trials, double const p_success, size_t const num_samplings ) {
-//    assert( 1 <= trials && trials <= MAX_BINOMIAL_TRIALS );
-//    assert( !(0.0 > p_success || p_success > 1.0) );  // between 0 and 1 ie. [0,1]
-//    try {
-//    cout << "Probability Mass/Density Function Graph - Binomial Distribution with trials, likelyhood: " << trials << ", " << p_success << std::endl;
-//    //    std::random_device                          rd;                           // todo: NOT USED yet! would need to thread-safe the distribution.
-//    //    std::mt19937                                gen( rd() );                  // todo: NOT USED yet!
-//    //    std::binomial_distribution<size_t>          dist( trials, p_success );    // todo: NOT USED yet!
-//    Histogram histogram;
-//    size_t                              num_trial_values      { trials+1 };  // include the case for zero successes within the set of trials.
-//    std::vector<std::future<Histogram>> futures;
-//    for (size_t chunk = 0; chunk < MAX_ASYNC_FUTURES; ++chunk)
-//    {
-//        std::future<Histogram> future_histogram = std::async( sample_the_distribution_a, num_samplings, trials, p_success);
-//        futures.push_back( future_histogram );
-//    }
-//    std::for_each(futures.begin(), futures.end(), // for (auto this_t : threads) {  // todo: why not?
-//                  std::mem_fn( &std::thread::join ));
-//    for (auto ff:futures ) {  // don't add the first chuck (ie. = 0) to itself!
-//        Histogram histogram_partial = futures.pop_back().get();
-//        for (size_t my_trial = 0; my_trial < num_trial_values; my_trial++) {
-//            histogram[my_trial] += histogram[my_trial];
-//        }
-//    }
-//    for (size_t i = 0; i < num_trial_values; ++i ) {
-//        cout << std::setw(4) << i << ' ' << std::setw(10) << histogram[i]/static_cast<double>(num_samplings) << ' '<< '\n';
-//    }
-//} catch (std::exception & e) { cerr<<PGM_NAME+":binomial_rel_freq_histogram:error exception: "<<e.what()<<endl;
-//} catch (...) { cerr<<PGM_NAME+":binomial_rel_freq_histogram:error unknown exception: "<<endl; throw; };
-// }
-//}
+/* void binomial_rel_freq_histogram_array_async(size_t trials, double const p_success, size_t const num_samplings ) {
+    assert( 1 <= trials && trials <= MAX_BINOMIAL_TRIALS );
+    assert( !(0.0 > p_success || p_success > 1.0) );  // between 0 and 1 ie. [0,1]
+    try {
+    cout << "Probability Mass/Density Function Graph - Binomial Distribution with trials, likelyhood: " << trials << ", " << p_success << std::endl;
+    //    std::random_device                          rd;                           // todo: NOT USED yet! would need to thread-safe the distribution.
+    //    std::mt19937                                gen( rd() );                  // todo: NOT USED yet!
+    //    std::binomial_distribution<size_t>          dist( trials, p_success );    // todo: NOT USED yet!
+    Histogram histogram;
+    size_t                              num_trial_values      { trials+1 };  // include the case for zero successes within the set of trials.
+    std::vector<std::future<Histogram>> futures;
+    for (size_t chunk = 0; chunk < MAX_ASYNC_FUTURES; ++chunk)
+    {
+        std::future<Histogram> future_histogram = std::async( sample_the_distribution_a, num_samplings, trials, p_success);
+        futures.push_back( future_histogram );
+    }
+    std::for_each(futures.begin(), futures.end(), // for (auto this_t : threads) {  // todo: why not?
+                  std::mem_fn( &std::thread::join ));
+    for (auto ff:futures ) {  // don't add the first chuck (ie. = 0) to itself!
+        Histogram histogram_partial = futures.pop_back().get();
+        for (size_t my_trial = 0; my_trial < num_trial_values; my_trial++) {
+            histogram[my_trial] += histogram[my_trial];
+        }
+    }
+    for (size_t i = 0; i < num_trial_values; ++i ) {
+        cout << std::setw(4) << i << ' ' << std::setw(10) << histogram[i]/static_cast<double>(num_samplings) << ' '<< '\n';
+    }
+} catch (std::exception & e) { cerr<<PGM_NAME+":binomial_rel_freq_histogram:error exception: "<<e.what()<<endl;
+} catch (...) { cerr<<PGM_NAME+":binomial_rel_freq_histogram:error unknown exception: "<<endl; throw; };
+ }
+} */
 
 void binomial_rel_freq_histogram_array_thread(size_t trials, double const p_success, size_t const samplings_qty ) {
     assert( 1 <= trials && trials <= BINOMIAL_TRIALS_MAX );
@@ -286,18 +272,24 @@ void binomial_rel_freq_histogram_array_thread(size_t trials, double const p_succ
     size_t const                    chunk_stride          { num_trial_values };
     size_t const                    samplings_qty_min     { 10'000 };
     size_t                          chunk_offset          { 0 };
-    auto [threads_qty, chunk_sample_quantity, chunk_sample_qty_p1] = threads_on_hardware( samplings_qty, samplings_qty_min, THREADS_MIN, THREADS_MAX);
-    std::vector<std::jthread>        threads;
+    auto [threads_qty, chunk_sample_quantity, chunk_sample_qty_mod]
+            = threads_on_hardware( samplings_qty, samplings_qty_min, THREADS_MIN, THREADS_MAX);
 
-    Sample_the_distribution_fo sample_chunk_fo2 {histogram, chunk_sample_quantity, chunk_sample_qty_p1, trials, p_success};  // histogram is a reference, so we need to join within this containing function.
-    for (size_t chunk = 0; chunk < THREADS_MAX; ++chunk)        //  *** Parallel Section ***
+    std::vector<std::jthread>        threads;
+    Sample_the_distribution_fo sample_chunk_fo2 {histogram, chunk_sample_quantity, chunk_sample_qty_mod, trials, p_success};  // histogram is a reference, so we need to join within this containing function.
+    // must verify that we have more than one thread
+    for (size_t chunk = 0; chunk < threads_qty-1; ++chunk)        //  *** Parallel Section ***
     {
         try {
-            std::jthread t = std::jthread( sample_chunk_fo2, chunk_offset );
+            bool is_do_one_more {false};
+            if ( 0 != chunk_sample_qty_mod && chunk_sample_qty_mod-- > 0) is_do_one_more = true;  // iff we have a mod qty, then do_one and decrement.
+            std::jthread t = std::jthread( sample_chunk_fo2, chunk_offset, is_do_one_more );
             threads.push_back( std::move(t) );
         } catch (...) { cerr << PGM_NAME+":fatal error: thread creation failed\n"<<endl; throw; }; // don't need thread guard due to vector. todo: even with thowing vector will be destructed and so also threads?
         chunk_offset = chunk_offset + chunk_stride;
-    }                
+    }
+    assert( 0 == chunk_sample_qty_mod );
+    sample_chunk_fo2( chunk_offset /* is_do_one_more = false (default)*/);  // do put the last thread on the main thread.
     std::for_each(threads.begin(), threads.end(),               // *** BARRIER *** //for (auto this_t : threads) {  // todo: why not?
                   std::mem_fn( &std::jthread::join ));
     chunk_offset = chunk_stride;

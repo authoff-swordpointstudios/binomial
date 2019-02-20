@@ -170,9 +170,11 @@ public:                                                     // todo: data layout
     void operator()(size_t const offset_, bool const is_do_one_more = false) {
         try {
         offset =                    offset_;
-        std::random_device          rd;
-        std::mt19937                gen ( rd() );
-        std::binomial_distribution<unsigned long>  dist { trials, p_success };  // assumed not to be thread-safe
+//        std::random_device          rd;
+//        std::mt19937                gen ( rd() );
+//        std::binomial_distribution<unsigned long>  dist { trials, p_success };  // assumed not to be thread-safe
+//        gen( rd() );
+
         size_t                      current_samples { is_do_one_more ? chunk_sample_qty+1 : chunk_sample_qty };  // this loop takes care of one of the additional (mod remainder) operations that are required.
         if (!p1_done) {current_samples = chunk_sample_qty_p1; p1_done = true; };
         for (unsigned j=0; j < current_samples; ++j) {
@@ -190,9 +192,9 @@ private:
     bool   p1_done { false };  // one set of samples has to do the number with the extra samples
     //  @OFFICER_TUBA: if only the following line is uncommented: compile error on no matching function? inititializer list?
     //                 unless it is marked static!
-    //    std::random_device                  rd;     // todo: NOT USED yet!
-    //    std::binomial_distribution<size_t>  dist;   // todo: NOT USED yet!
-    //    std::mt19937                        gen;    // todo: NOT USED yet!
+    static std::random_device           rd;     // todo: NOT USED yet!
+    std::binomial_distribution<size_t>  dist( rd() );   // todo: NOT USED yet!
+    std::mt19937                        gen;    // todo: NOT USED yet!
 public:
     Sample_the_distribution_fo()=delete;
                         //        : histogram_pll(histogram_), chunk_sample_qty_p1(chunk_sample_qty_p1_), chunk_sample_qty(chunk_sample_qty_), trials(trials_), p_success(p_success_) {}

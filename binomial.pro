@@ -44,7 +44,7 @@ LIBS += \
 #        -lboost_filesystem \
 #        -lboost_graph_parallel \
 #        -lboost_graph \
-        -lboost_iostreams \
+#        -lboost_iostreams \
 #        -lboost_locale \
 #        -lboost_log_setup \
         -lboost_log \
@@ -59,7 +59,7 @@ LIBS += \
 #        -lboost_mpi_python \
 #        -lboost_mpi \
 #        -lboost_prg_exec_monitor \
-        -lboost_program_options \
+#        -lboost_program_options \
 #        -lboost_python-py27 \
 #        -lboost_python-py35 \
 #        -lboost_python \
